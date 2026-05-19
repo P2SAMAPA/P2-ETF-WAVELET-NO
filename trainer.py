@@ -58,7 +58,6 @@ def main():
                 print(f"  Skipping window {win}d (insufficient data)")
                 continue
             print(f"  Processing window {win}d...")
-            # Use last `win` days of price data
             prices_win = prices.iloc[-win:]
             etf_pred = {}
             for etf in tickers:
@@ -68,27 +67,29 @@ def main():
                 X, y = create_sequences(series, config.SEQ_LEN)
                 if X is None or len(X) < 20:
                     continue
-                # Train / test split: last 20% for validation (not used)
                 split = int(0.8 * len(X))
                 X_train = X[:split]
                 y_train = y[:split]
-                # Reshape for 1D CNN: (n, 1, seq_len)
-                X_train = X_train[:, np.newaxis, :]
+                X_train = X_train[:, np.newaxis, :]   # (n, 1, seq_len)
                 model = train_wno_model(X_train, y_train, config.SEQ_LEN,
                                         hidden_channels=config.HIDDEN_CHANNELS,
                                         lr=config.LEARNING_RATE,
                                         epochs=config.EPOCHS,
                                         batch_size=config.BATCH_SIZE,
                                         device=device)
-                # Predict on the most recent window (last `seq_len` days)
-                last_seq = series.iloc[-config.SEQ_LEN:].values
-                last_ret = np.log(last_seq[-1] / last_seq[-2]) if len(last_seq) > 1 else 0.0
-                # Actually we need the log returns of the last seq_len days to form input
+                # Predict on the most recent window
                 log_ret_series = np.log(series / series.shift(1)).dropna()
                 if len(log_ret_series) < config.SEQ_LEN:
                     continue
                 last_input = log_ret_series.iloc[-config.SEQ_LEN:].values.reshape(1, 1, -1)
-                pred = predict_wno(model, last_input)[0]
+                pred = predict_wno(model, last_input)
+                # Ensure pred is scalar
+                if isinstance(pred, np.ndarray):
+                    pred = pred[0] if pred.size > 0 else 0.0
+                elif isinstance(pred, float):
+                    pass
+                else:
+                    pred = float(pred)
                 etf_pred[etf] = pred
             window_results[win] = etf_pred
             for etf, pred in etf_pred.items():
@@ -97,6 +98,7 @@ def main():
 
         if not best_per_etf:
             print("  No valid predictions – falling back to historical mean return")
+            returns = data_manager.prepare_returns_matrix(df, tickers)
             for etf in tickers:
                 if etf in returns.columns:
                     mean_ret = returns[etf].iloc[-252:].mean()
